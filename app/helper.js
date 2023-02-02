@@ -59,7 +59,7 @@ class YoutubeGrabberHelper {
     if (typeof (channelPageDataResponse) === 'undefined') {
       channelPageDataResponse = response.data[1].response
     }
-    if ('alerts' in channelPageDataResponse) {
+    if (typeof (channelPageDataResponse.alerts) !== 'undefined') {
       return {
         alertMessage: channelPageDataResponse.alerts[0].alertRenderer.text.simpleText
       }
@@ -79,9 +79,6 @@ class YoutubeGrabberHelper {
       const contents = videoTab.tabRenderer.content.sectionListRenderer.contents[0].itemSectionRenderer.contents[0]
       if ('reelShelfRenderer' in contents) {
         channelVideoData = contents.reelShelfRenderer
-      }
-      if ('gridRenderer' in contents) {
-        channelVideoData = contents.gridRenderer
       }
     }
     if (typeof (channelVideoData) === 'undefined') {
@@ -190,19 +187,9 @@ class YoutubeGrabberHelper {
     let durationText
     let publishedText = ''
     if (typeof (obj.richItemRenderer) !== 'undefined') {
-      if ('videoRenderer' in obj.richItemRenderer.content) {
-        video = obj.richItemRenderer.content.videoRenderer
-        video.lengthSeconds = video.lengthText?.simpleText.split(':')?.reduce((acc, time) => (60 * acc) + +time)
-        video.title.simpleText = video.title.runs[0].text
-      }
-      if ('reelItemRenderer' in obj.richItemRenderer.content) {
-        video = obj.richItemRenderer.content.reelItemRenderer
-        video.title = video.headline
-        video.publishedTimeText = { simpleText: '' }
-      }
-    } else if ((typeof obj.videoRenderer) !== 'undefined') {
-      video = obj.videoRenderer
-      video.title.simpleText = video.title.runs[0].text
+      video = obj.richItemRenderer.content.videoRenderer
+      video.lengthSeconds = video.lengthText.simpleText.split(':').reduce((acc, time) => (60 * acc) + +time)
+      video.title.simpleText = video.title.runs.at(0).text
     } else if (typeof (obj.reelItemRenderer) !== 'undefined') {
       video = obj.reelItemRenderer
       video.title = video.headline
@@ -217,7 +204,7 @@ class YoutubeGrabberHelper {
 
     let title = video.title.simpleText
     let statusRenderer
-    if (video.thumbnailOverlays) {
+    if (!('channelVideoPlayerRenderer' in obj) && !('reelItemRenderer' in obj)) {
       statusRenderer = video.thumbnailOverlays[0].thumbnailOverlayTimeStatusRenderer
     }
 
@@ -230,19 +217,12 @@ class YoutubeGrabberHelper {
       viewCount = parseInt(video.viewCountText.runs[0].text.split(',').join(''))
       viewCountText = video.shortViewCountText.runs[0].text + video.shortViewCountText.runs[1].text
     } else if (typeof (statusRenderer) !== 'undefined' && typeof (statusRenderer.text) !== 'undefined' && typeof (statusRenderer.text.runs) !== 'undefined') {
-      if (statusRenderer.text.runs.map(run => run.text).includes('LIVE')) {
-        liveNow = true
-        publishedText = 'Live'
-        viewCount = 0
-        viewCountText = '0 views'
-      } else {
-        premiere = true
-        durationText = 'PREMIERE'
-        viewCount = 0
-        viewCountText = '0 views'
-        const premiereDate = new Date(parseInt(video.upcomingEventData.startTime * 1000))
-        publishedText = premiereDate.toLocaleString()
-      }
+      premiere = true
+      durationText = 'PREMIERE'
+      viewCount = 0
+      viewCountText = '0 views'
+      const premiereDate = new Date(parseInt(video.upcomingEventData.startTime * 1000))
+      publishedText = premiereDate.toLocaleString()
     } else if (typeof (video.viewCountText) === 'undefined') {
       premium = true
       if (typeof (video.publishedTimeText) === 'undefined') {
@@ -260,8 +240,8 @@ class YoutubeGrabberHelper {
 
       publishedText = video.publishedTimeText.simpleText
 
-      if (video.thumbnailOverlays && typeof (statusRenderer) !== 'undefined') {
-        durationText = statusRenderer.text.simpleText
+      if (!('channelVideoPlayerRenderer' in obj) && !('reelItemRenderer' in obj) && typeof (video.thumbnailOverlays[0].thumbnailOverlayTimeStatusRenderer) !== 'undefined') {
+        durationText = video.thumbnailOverlays[0].thumbnailOverlayTimeStatusRenderer.text.simpleText
         const durationSplit = durationText.split(':')
 
         if (durationSplit.length === 3) {
@@ -584,82 +564,65 @@ class YoutubeGrabberHelper {
     } else if ('richItemRenderer' in item) {
       items = [this.parseVideo(item.richItemRenderer.content, channelInfo)]
     } else if ('itemSectionRenderer' in item) {
-      if ('channelFeaturedContentRenderer' in item.itemSectionRenderer.contents[0]) {
-        type = 'livestreams'
-        shelfName = item.itemSectionRenderer.contents[0].channelFeaturedContentRenderer.title.runs.map(run => run.text).join(' ')
-        items = item.itemSectionRenderer.contents[0].channelFeaturedContentRenderer.items.map(item => this.parseVideo(item, channelInfo))
-      } else {
-        const shelf = item.itemSectionRenderer.contents[0].shelfRenderer
+      const shelf = item.itemSectionRenderer.contents[0].shelfRenderer
 
-        if ('runs' in shelf.title) {
-          const title = shelf.title.runs[0]
-          if ('navigationEndpoint' in title) {
-            shelfUrl = title.navigationEndpoint.commandMetadata.webCommandMetadata.url
-          }
-          shelfName = title.text
-        } else {
-          shelfName = shelf.title.simpleText
-          shelfUrl = shelf.endpoint.commandMetadata.webCommandMetadata.url
+      if ('runs' in shelf.title) {
+        const title = shelf.title.runs[0]
+        if ('navigationEndpoint' in title) {
+          shelfUrl = title.navigationEndpoint.commandMetadata.webCommandMetadata.url
         }
-        if (shelfUrl === null) {
-          let shelfRenderer
-          if ('expandedShelfContentsRenderer' in shelf.content) {
-            type = 'verticalVideoList'
-            shelfRenderer = shelf.content.expandedShelfContentsRenderer
-            items = shelfRenderer.items.map(video => {
-              return this.parseVideo(video, channelInfo)
-            })
-          } else {
-            type = 'playlist'
-            shelfRenderer = shelf.content.horizontalListRenderer
-            items = shelfRenderer.items.map(pl => {
-              return this.parsePlaylist(pl, channelInfo)
-            })
-          }
-        } else if (/\?list=/.test(shelfUrl)) {
-          type = 'playlist' // similar to videos but links to a playlist url
-          if ('horizontalListRenderer' in shelf.content) {
-            items = shelf.content.horizontalListRenderer.items.map(video => {
-              return this.parseVideo(video, channelInfo)
-            })
-          } else {
-            items = shelf.content.expandedShelfContentsRenderer.items.map(video => {
-              return this.parseVideo(video, channelInfo)
-            })
-          }
-        } else if (/\/channels/.test(shelfUrl)) {
-          type = 'channels'
-          if ('expandedShelfContentsRenderer' in shelf.content) {
-            items = shelf.content.expandedShelfContentsRenderer.items.map(channel => {
-              return this.parseFeaturedChannel(channel.channelRenderer)
-            })
-          } else {
-            items = shelf.content.horizontalListRenderer.items.map(channel => {
-              return this.parseFeaturedChannel(channel.gridChannelRenderer)
-            })
-          }
-        } else if (/\/videos/.test(shelfUrl)) {
-          type = 'videos'
+        shelfName = title.text
+      } else {
+        shelfName = shelf.title.simpleText
+        shelfUrl = shelf.endpoint.commandMetadata.webCommandMetadata.url
+      }
+      if (shelfUrl === null) {
+        let shelfRenderer
+        if ('expandedShelfContentsRenderer' in shelf.content) {
+          type = 'verticalVideoList'
+          shelfRenderer = shelf.content.expandedShelfContentsRenderer
+          items = shelfRenderer.items.map(video => {
+            return this.parseVideo(video, channelInfo)
+          })
+        } else {
+          type = 'playlist'
+          shelfRenderer = shelf.content.horizontalListRenderer
+          items = shelfRenderer.items.map(pl => {
+            return this.parsePlaylist(pl, channelInfo)
+          })
+        }
+      } else if (/\?list=/.test(shelfUrl)) {
+        type = 'playlist' // similar to videos but links to a playlist url
+        if ('horizontalListRenderer' in shelf.content) {
           items = shelf.content.horizontalListRenderer.items.map(video => {
             return this.parseVideo(video, channelInfo)
           })
-        } else if (/\/playlists/.test(shelfUrl)) {
-          if (shelf.content.horizontalListRenderer !== undefined && shelf.content.horizontalListRenderer.items[0].compactStationRenderer != null) {
-            type = 'mix'
-            items = shelf.content.horizontalListRenderer.items.map(mix => {
-              return this.parseMix(mix, channelInfo)
-            })
-          } else if (shelf.content.expandedShelfContentsRenderer !== undefined && shelf.content.expandedShelfContentsRenderer.items[0].playlistRenderer != null) {
-            type = 'playlists'
-            items = shelf.content.expandedShelfContentsRenderer.items.map(playlist => {
-              return this.parsePlaylist(playlist, channelInfo)
-            })
-          } else {
-            type = 'playlists'
-            items = shelf.content.horizontalListRenderer.items.map(playlist => {
-              return this.parsePlaylist(playlist, channelInfo)
-            })
-          }
+        } else {
+          items = shelf.content.expandedShelfContentsRenderer.items.map(video => {
+            return this.parseVideo(video, channelInfo)
+          })
+        }
+      } else if (/\/channels/.test(shelfUrl)) {
+        type = 'channels'
+        items = shelf.content.horizontalListRenderer.items.map(channel => {
+          return this.parseFeaturedChannel(channel.gridChannelRenderer)
+        })
+      } else if (/\/videos/.test(shelfUrl)) {
+        type = 'videos'
+        items = shelf.content.horizontalListRenderer.items.map(video => {
+          return this.parseVideo(video, channelInfo)
+        })
+      } else if (/\/playlists/.test(shelfUrl)) {
+        if (shelf.content.horizontalListRenderer.items[0].compactStationRenderer != null) {
+          type = 'mix'
+          items = shelf.content.horizontalListRenderer.items.map(mix => {
+            return this.parseMix(mix, channelInfo)
+          })
+        } else {
+          type = 'playlists'
+          items = shelf.content.horizontalListRenderer.items.map(playlist => {
+            return this.parsePlaylist(playlist, channelInfo)
+          })
         }
       }
     }
@@ -677,56 +640,82 @@ class YoutubeGrabberHelper {
       case 1: return this.performChannelUrlRequest(channelId, urlAppendix)
       case 2: return this.performUserUrlRequest(channelId, urlAppendix)
       case 3: return this.performCUrlRequest(channelId, urlAppendix)
-      case 4: return this.performChannelTagRequest(channelId, urlAppendix)
-      case 5: return this.performChannelRequest(channelId, urlAppendix)
+      case 4: return this.performPUrlRequest(channelId, urlAppendix)
       default: return this.performChannelPageRequestWithFallbacks(channelId, urlAppendix)
     }
   }
 
-  async performChannelRequest(ajaxUrl, urlAppendix, cType) {
-    if (urlAppendix !== null) {
-      ajaxUrl += ajaxUrl.endsWith('/') ? urlAppendix : '/' + urlAppendix
+  async performChannelPageRequestWithFallbacks(channelId, urlAppendix) {
+    const ajaxUrl = `https://www.youtube.com/channel/${channelId}/${urlAppendix}`
+    let workedUrl = 1
+    let channelPageResponse = await this.makeChannelRequest(ajaxUrl)
+
+    if (channelPageResponse.error) {
+      // Try again as a user channel
+      const userUrl = `https://www.youtube.com/user/${channelId}/${urlAppendix}`
+      channelPageResponse = await this.makeChannelRequest(userUrl)
+      workedUrl = 2
+      if (channelPageResponse.error) {
+        const cUrl = `https://www.youtube.com/c/${channelId}/${urlAppendix}`
+        channelPageResponse = await this.makeChannelRequest(cUrl)
+        workedUrl = 3
+        if (channelPageResponse.error) {
+          const cUrl = `https://www.youtube.com/${channelId}/${urlAppendix}`
+          channelPageResponse = await this.makeChannelRequest(cUrl)
+          workedUrl = 4
+
+          if (channelPageResponse.error) {
+            return Promise.reject(channelPageResponse.message)
+          }
+        
+        }
+      }
     }
+    return { response: channelPageResponse, channelIdType: workedUrl }
+  }
+
+  async performChannelUrlRequest(channelId, urlAppendix) {
+    const ajaxUrl = `https://www.youtube.com/channel/${channelId}/${urlAppendix}`
+
     const channelPageResponse = await this.makeChannelRequest(ajaxUrl)
 
     if (channelPageResponse.error) {
       return Promise.reject(channelPageResponse.message)
     }
-    return { response: channelPageResponse, channelIdType: cType }
-  }
-
-  async performChannelPageRequestWithFallbacks(channelId, urlAppendix) {
-    return await this.performChannelUrlRequest(channelId, urlAppendix).catch(async _ => {
-      return await this.performChannelTagRequest(channelId, urlAppendix).catch(async _ => {
-        return await this.performUserUrlRequest(channelId, urlAppendix).catch(async _ => {
-          return await this.performCUrlRequest(channelId, urlAppendix).catch(async _ => {
-            return await this.performChannelRequest(channelId, urlAppendix).catch(async e => {
-              return Promise.reject(e)
-            })
-          })
-        })
-      })
-    })
-  }
-
-  async performChannelUrlRequest(channelId, urlAppendix) {
-    const ajaxUrl = `https://www.youtube.com/channel/${channelId}/`
-    return await this.performChannelRequest(ajaxUrl, urlAppendix, 1)
+    return { response: channelPageResponse, channelIdType: 1 }
   }
 
   async performUserUrlRequest(channelId, urlAppendix) {
-    const ajaxUrl = `https://www.youtube.com/user/${channelId}/`
-    return await this.performChannelRequest(ajaxUrl, urlAppendix, 2)
+    const ajaxUrl = `https://www.youtube.com/user/${channelId}/${urlAppendix}`
+
+    const channelPageResponse = await this.makeChannelRequest(ajaxUrl)
+
+    if (channelPageResponse.error) {
+      return Promise.reject(channelPageResponse.message)
+    }
+    return { response: channelPageResponse, channelIdType: 2 }
   }
 
   async performCUrlRequest(channelId, urlAppendix) {
-    const ajaxUrl = `https://www.youtube.com/c/${channelId}/`
-    return await this.performChannelRequest(ajaxUrl, urlAppendix, 3)
+    const ajaxUrl = `https://www.youtube.com/c/${channelId}/${urlAppendix}`
+
+    const channelPageResponse = await this.makeChannelRequest(ajaxUrl)
+
+    if (channelPageResponse.error) {
+      return Promise.reject(channelPageResponse.message)
+    }
+    return { response: channelPageResponse, channelIdType: 3 }
   }
 
-  async performChannelTagRequest(channelTag, urlAppendix) {
-    const ajaxUrl = `https://www.youtube.com/@${channelTag}/`
-    return await this.performChannelRequest(ajaxUrl, urlAppendix, 4)
+  async performPUrlRequest(channelId, urlAppendix) {
+    const ajaxUrl = `https://www.youtube.com/${channelId}/${urlAppendix}`
+
+    const channelPageResponse = await this.makeChannelRequest(ajaxUrl)
+
+    if (channelPageResponse.error) {
+      return Promise.reject(channelPageResponse.message)
+    }
+    return { response: channelPageResponse, channelIdType: 3 }
   }
 
   static findTab(tabs) {
